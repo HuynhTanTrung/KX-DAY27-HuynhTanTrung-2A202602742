@@ -10,8 +10,9 @@ def get_llm(temperature: float = 0.2) -> ChatOpenAI:
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set — copy .env.example to .env")
     return ChatOpenAI(
-        model=os.environ.get("LLM_MODEL", "openai/gpt-4o-mini"),
+        model=os.environ.get("LLM_MODEL", "google/gemini-2.5-flash"),
         base_url=os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
         api_key=api_key,
         temperature=temperature,
+        max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "8000")),
     )

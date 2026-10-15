@@ -23,11 +23,39 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
 from common.db import db_path
-# TODO: import the graph builder + helpers from your exercise 4 solution.
-# Suggestion: rename `exercises/exercise_4_audit.py` functions you need
-# (build_graph, handle_interrupt logic) and import them here, OR copy the
-# graph wiring inline.
-# from exercises.exercise_4_audit import build_graph
+from exercises.exercise_4_audit import build_graph
+
+with st.sidebar:
+    st.header("Recent sessions")
+
+    import sqlite3
+    from common.db import db_path
+
+    conn = sqlite3.connect(db_path())
+    rows = conn.execute("""
+        SELECT thread_id,
+               MAX(pr_url)       AS pr_url,
+               MIN(timestamp)    AS started,
+               MAX(timestamp)    AS last_event,
+               COUNT(*)          AS events
+        FROM audit_events
+        GROUP BY thread_id
+        ORDER BY started DESC
+        LIMIT 10
+    """).fetchall()
+    conn.close()
+
+    if not rows:
+        st.caption("No sessions yet — run a review to see it here.")
+    for thread_id, pr_url, started, last_event, events in rows:
+        label = f"{thread_id[:8]}… · {events} events"
+        if st.button(label, key=f"sess_{thread_id}"):
+            st.session_state.thread_id = thread_id
+            st.session_state.pr_url = pr_url or ""
+            st.session_state.interrupt_payload = None
+            st.session_state.final = None
+            st.rerun()
+        st.caption(f"`{pr_url}`  \nstarted {started[:19]}")
 
 
 load_dotenv()
@@ -69,7 +97,6 @@ with st.form("start"):
 
 # ─── Renderers per interrupt kind ──────────────────────────────────────────
 def render_approval_card(payload: dict) -> dict | None:
-    """58–72% bucket: show the LLM review + 3 buttons. Return resume dict or None."""
     conf = payload["confidence"]
     st.subheader(f"Approval requested — confidence {conf:.0%}")
     st.caption(payload["confidence_reasoning"])
@@ -82,22 +109,18 @@ def render_approval_card(payload: dict) -> dict | None:
         st.code(payload.get("diff_preview", ""), language="diff")
 
     feedback = st.text_input("Feedback (optional)", key="approval_feedback")
+
     col1, col2, col3 = st.columns(3)
-    # TODO: hook up the three buttons. Each click should return one of:
-    #   {"choice": "approve", "feedback": feedback}
-    #   {"choice": "reject",  "feedback": feedback}
-    #   {"choice": "edit",    "feedback": feedback}
     if col1.button("Approve", type="primary"):
-        ...  # return {"choice": "approve", ...}
+        return {"choice": "approve", "feedback": feedback}
     if col2.button("Reject"):
-        ...
+        return {"choice": "reject", "feedback": feedback}
     if col3.button("Edit"):
-        ...
+        return {"choice": "edit", "feedback": feedback}
     return None
 
 
 def render_escalation_card(payload: dict) -> dict | None:
-    """< 58% bucket: show risk factors + question form. Return {question: answer} or None."""
     conf = payload["confidence"]
     st.subheader(f"Strong escalation — confidence {conf:.0%}")
     st.caption(payload["confidence_reasoning"])
@@ -106,11 +129,13 @@ def render_escalation_card(payload: dict) -> dict | None:
     st.markdown(payload["summary"])
 
     with st.form("escalation"):
-        # TODO: render one text_input per question in payload["questions"]
-        #       collect answers into a dict {question: answer_str}
-        #       on submit, return the dict.
         answers: dict[str, str] = {}
-        st.form_submit_button("Submit answers")
+        for i, q in enumerate(payload["questions"]):
+            answers[q] = st.text_input(q, key=f"esc_q_{i}")
+        submitted = st.form_submit_button("Submit answers")
+
+    if submitted:
+        return answers
     return None
 
 
@@ -119,18 +144,16 @@ async def run_graph(pr_url: str, thread_id: str, resume_value=None):
     """Invoke the graph once. Returns the final result or {'__interrupt__': ...}."""
     async with AsyncSqliteSaver.from_conn_string(db_path()) as cp:
         await cp.setup()
-        # TODO: build the graph with `cp` as the checkpointer (use the function
-        # you imported/copied at the top of this file).
-        # app = build_graph(cp)
+        app = build_graph(cp)
         cfg = {"configurable": {"thread_id": thread_id}}
 
-        # TODO:
-        # - If resume_value is None: result = await app.ainvoke(
-        #       {"pr_url": pr_url, "thread_id": thread_id}, cfg)
-        # - Else:                    result = await app.ainvoke(
-        #       Command(resume=resume_value), cfg)
-        # - Return result.
-        raise NotImplementedError("Wire up the graph invocation")
+        if resume_value is None:
+            result = await app.ainvoke(
+                {"pr_url": pr_url, "thread_id": thread_id}, cfg
+            )
+        else:
+            result = await app.ainvoke(Command(resume=resume_value), cfg)
+        return result
 
 
 # ─── Main flow ─────────────────────────────────────────────────────────────
